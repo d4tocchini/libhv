@@ -14,6 +14,10 @@
 #include "sys/eventfd.h"
 #endif
 
+#ifdef WITH_ZTS
+#include "ZeroTierSockets.h"
+#endif
+
 #define HLOOP_PAUSE_TIME        10      // ms
 #define HLOOP_MAX_BLOCK_TIME    100     // ms
 #define HLOOP_STAT_TIMEOUT      60000   // ms
@@ -884,11 +888,65 @@ hio_t* hio_create_socket(hloop_t* loop, const char* host, int port, hio_type_e t
         // fprintf(stderr, "unknown host: %s\n", host);
         return NULL;
     }
-    int sockfd = socket(addr.sa.sa_family, sock_type, 0);
+    int sockfd = -1;
+#ifdef WITH_ZTS
+    if (type & HIO_TYPE_ZTS) {
+        sockfd = zts_bsd_socket(addr.sa.sa_family, sock_type, 0);
+        if (sockfd < 0) {
+            perror("socket");
+            return NULL;
+        }
+        printf("ZTS hio_create_socket fd=%i sock_type=%i,\n",sockfd,sock_type);
+        hio_t* io = NULL;
+        if (side == HIO_SERVER_SIDE) {
+    #ifdef SO_REUSEADDR
+            // NOTE: SO_REUSEADDR allow to reuse sockaddr of TIME_WAIT status
+            int reuseaddr = 1;
+            if (zts_bsd_setsockopt(sockfd, ZTS_SOL_SOCKET, ZTS_SO_REUSEADDR, (const char*)&reuseaddr, sizeof(int)) < 0) {
+                perror("setsockopt");
+                closesocket(sockfd);
+                return NULL;
+            }
+    #endif
+            if (zts_bsd_bind(sockfd, &addr.sa, sockaddr_len(&addr)) < 0) {
+                perror("bind");
+                closesocket(sockfd);
+                return NULL;
+            }
+            if (sock_type == SOCK_STREAM) {
+                if (zts_bsd_listen(sockfd, SOMAXCONN) < 0) {
+                    perror("listen");
+                    closesocket(sockfd);
+                    return NULL;
+                }
+            }
+        }
+        io = hio_get(loop, sockfd);
+        assert(io != NULL);
+        io->io_type = type;
+        if (side == HIO_SERVER_SIDE) {
+            hio_set_localaddr(io, &addr.sa, sockaddr_len(&addr));
+            io->priority = HEVENT_HIGH_PRIORITY;
+        } else {
+// ifdef WITH_ZTS
+            if (type & HIO_TYPE_ZTS) {
+                if (io->peeraddr == NULL) {
+                    HV_ALLOC(io->peeraddr, sizeof(struct zts_sockaddr_storage));
+                }
+                memcpy(io->peeraddr, &addr.sa, sizeof(struct zts_sockaddr_storage));
+            } else
+                hio_set_peeraddr(io, &addr.sa, sockaddr_len(&addr));
+        }
+        return io;
+    }
+    else
+#endif
+    sockfd = socket(addr.sa.sa_family, sock_type, 0);
     if (sockfd < 0) {
         perror("socket");
         return NULL;
     }
+    printf("hio_create_socket fd=%i sock_type=%i,\n",sockfd,sock_type);
     hio_t* io = NULL;
     if (side == HIO_SERVER_SIDE) {
 #ifdef SO_REUSEADDR
@@ -920,7 +978,14 @@ hio_t* hio_create_socket(hloop_t* loop, const char* host, int port, hio_type_e t
         hio_set_localaddr(io, &addr.sa, sockaddr_len(&addr));
         io->priority = HEVENT_HIGH_PRIORITY;
     } else {
-        hio_set_peeraddr(io, &addr.sa, sockaddr_len(&addr));
+// ifdef WITH_ZTS
+        if (type & HIO_TYPE_ZTS) {
+            if (io->peeraddr == NULL) {
+                HV_ALLOC(io->peeraddr, sizeof(struct zts_sockaddr_storage));
+            }
+            memcpy(io->peeraddr, &addr.sa, sizeof(struct zts_sockaddr_storage));
+        } else
+            hio_set_peeraddr(io, &addr.sa, sockaddr_len(&addr));
     }
     return io;
 }

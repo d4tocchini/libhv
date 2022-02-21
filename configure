@@ -36,6 +36,7 @@ dependencies:
   --with-openssl        compile with openssl?           (DEFAULT: $WITH_OPENSSL)
   --with-gnutls         compile with gnutls?            (DEFAULT: $WITH_GNUTLS)
   --with-mbedtls        compile with mbedtls?           (DEFAULT: $WITH_MBEDTLS)
+  --with-zts            compile with ZeroTier Sockets?  (DEFAULT: $WITH_ZTS)
 
 rudp:
   --with-kcp            compile with kcp?               (DEFAULT: $WITH_KCP)

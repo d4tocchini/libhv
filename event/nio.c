@@ -6,6 +6,11 @@
 #include "hlog.h"
 #include "hthread.h"
 
+#ifdef WITH_ZTS
+#include "ZeroTierSockets.h"
+#endif
+
+
 static void __connect_timeout_cb(htimer_t* timer) {
     hio_t* io = (hio_t*)timer->privdata;
     if (io) {
@@ -42,19 +47,19 @@ static void __connect_cb(hio_t* io) {
 }
 
 static void __read_cb(hio_t* io, void* buf, int readbytes) {
-    // printd("> %.*s\n", readbytes, buf);
+    printd("> %.*s\n", readbytes, buf);
     io->last_read_hrtime = io->loop->cur_hrtime;
     hio_handle_read(io, buf, readbytes);
 }
 
 static void __write_cb(hio_t* io, const void* buf, int writebytes) {
-    // printd("< %.*s\n", writebytes, buf);
+    printd("< %.*s\n", writebytes, buf);
     io->last_write_hrtime = io->loop->cur_hrtime;
     hio_write_cb(io, buf, writebytes);
 }
 
 static void __close_cb(hio_t* io) {
-    // printd("close fd=%d\n", io->fd);
+    printd("close fd=%d\n", io->fd);
     hio_del_connect_timer(io);
     hio_del_close_timer(io);
     hio_del_read_timer(io);
@@ -109,7 +114,7 @@ static void ssl_client_handshake(hio_t* io) {
 }
 
 static void nio_accept(hio_t* io) {
-    // printd("nio_accept listenfd=%d\n", io->fd);
+    printd("nio_accept listenfd=%d\n", io->fd);
     int connfd = 0, err = 0, accept_cnt = 0;
     socklen_t addrlen;
     hio_t* connio = NULL;
@@ -175,17 +180,40 @@ accept_error:
 }
 
 static void nio_connect(hio_t* io) {
-    // printd("nio_connect connfd=%d\n", io->fd);
+    printd("nio_connect connfd=%d\n", io->fd);
     socklen_t addrlen = sizeof(sockaddr_u);
-    int ret = getpeername(io->fd, io->peeraddr, &addrlen);
+    int ret = 0;
+// #ifdef WITH_ZTS
+    if (io->io_type & HIO_TYPE_ZTS) {
+        addrlen = sizeof(struct zts_sockaddr_storage);
+        ret = zts_bsd_getpeername(io->fd, io->peeraddr, &addrlen);
+        // ret = getpeername(io->fd, io->peeraddr, &addrlen);
+        // ugh .....
+        if (addrlen > (int)sizeof(struct zts_sockaddr_storage) || addrlen < (int)sizeof(struct zts_sockaddr_in)) {
+            puts("WTF>>> addrlen");
+            printf("\taddrlen=%i,sizeof zts_sockaddr_in = %i vs %i, sizeof zts_sockaddr_storage=%i\n",addrlen,sizeof(struct zts_sockaddr_in),sizeof(struct sockaddr_in),sizeof(struct zts_sockaddr_storage));
+            printf("\tsockaddr %i vs %i\n",sizeof(struct zts_sockaddr),sizeof(struct sockaddr));
+            printf("\tsockaddr_u %i \n",sizeof(sockaddr_u));
+        }
+    }
+    else
+        ret = getpeername(io->fd, io->peeraddr, &addrlen);
     if (ret < 0) {
         io->error = socket_errno();
         printd("connect failed: %s: %d\n", strerror(io->error), io->error);
         goto connect_failed;
     }
     else {
-        addrlen = sizeof(sockaddr_u);
-        getsockname(io->fd, io->localaddr, &addrlen);
+// #ifdef WITH_ZTS
+        if (io->io_type & HIO_TYPE_ZTS) {
+            addrlen = sizeof(struct zts_sockaddr_storage);
+            // addrlen = sizeof(sockaddr_u);
+            zts_bsd_getsockname(io->fd, io->localaddr, &addrlen);
+            // getsockname(io->fd, io->localaddr, &addrlen);
+        } else {
+            addrlen = sizeof(sockaddr_u);
+            getsockname(io->fd, io->localaddr, &addrlen);
+        }
 
         if (io->io_type == HIO_TYPE_SSL) {
             if (io->ssl == NULL) {
@@ -223,6 +251,9 @@ connect_failed:
 }
 
 static int __nio_read(hio_t* io, void* buf, int len) {
+    printf("\t__nio_read ZTS:%i io_type=%i \n",!!(io->io_type & HIO_TYPE_ZTS), io->io_type==HIO_TYPE_TCP);
+    // io->io_type |= HIO_TYPE_ZTS;
+    printf("\t\t fd=%i\n",io->fd);
     int nread = 0;
     switch (io->io_type) {
     case HIO_TYPE_SSL:
@@ -244,9 +275,35 @@ static int __nio_read(hio_t* io, void* buf, int len) {
     }
         break;
     default:
+    {
+#ifdef WITH_ZTS
+        if (io->io_type & HIO_TYPE_ZTS) {
+            printf("\t read HIO_TYPE_ZTS fd=%i\n",io->fd);
+            switch (io->io_type ^ HIO_TYPE_ZTS) {
+                // case HIO_TYPE_SSL:
+                case HIO_TYPE_TCP:
+                    nread = zts_bsd_read(io->fd, buf, len);
+                    break;
+                case HIO_TYPE_UDP:
+                case HIO_TYPE_KCP:
+                case HIO_TYPE_IP:
+                {
+                    // socklen_t addrlen = sizeof(sockaddr_u);
+                    socklen_t addrlen = sizeof(struct zts_sockaddr_storage);
+                    nread = zts_bsd_recvfrom(io->fd, buf, len, 0, (struct zts_sockaddr*)io->peeraddr, (zts_socklen_t*)&addrlen);
+                }
+                    break;
+                default:
+                    nread = zts_bsd_read(io->fd, buf, len);
+                    break;
+            }
+        } else
+#endif
         nread = read(io->fd, buf, len);
+    }
         break;
     }
+    printd("read retval=%d\n", nread);
     // hlogd("read retval=%d", nread);
     return nread;
 }
@@ -270,15 +327,37 @@ static int __nio_write(hio_t* io, const void* buf, int len) {
         nwrite = sendto(io->fd, buf, len, 0, io->peeraddr, SOCKADDR_LEN(io->peeraddr));
         break;
     default:
+    {
+#ifdef WITH_ZTS
+        if (io->io_type & HIO_TYPE_ZTS) {
+            printf("\t write HIO_TYPE_ZTS fd=%i\n",io->fd);
+            switch (io->io_type ^ HIO_TYPE_ZTS) {
+                // case HIO_TYPE_SSL:
+                case HIO_TYPE_TCP:
+                    nwrite = zts_bsd_write(io->fd, buf, len);
+                    break;
+                case HIO_TYPE_UDP:
+                case HIO_TYPE_KCP:
+                case HIO_TYPE_IP:
+                    nwrite = zts_bsd_sendto(io->fd, buf, len, 0, (struct zts_sockaddr*)io->peeraddr, (zts_socklen_t)SOCKADDR_LEN(io->peeraddr));
+                    break;
+                default:
+                    nwrite = zts_bsd_write(io->fd, buf, len);
+                    break;
+            }
+        } else
+#endif
         nwrite = write(io->fd, buf, len);
+    }
         break;
     }
+    printd("write retval=%d fd=%i\n", nwrite,io->fd);
     // hlogd("write retval=%d", nwrite);
     return nwrite;
 }
 
 static void nio_read(hio_t* io) {
-    // printd("nio_read fd=%d\n", io->fd);
+    printd("nio_read fd=%d\n", io->fd);
     void* buf;
     int len = 0, nread = 0, err = 0;
 read:
@@ -290,7 +369,7 @@ read:
     }
     assert(len > 0);
     nread = __nio_read(io, buf, len);
-    // printd("read retval=%d\n", nread);
+    printd("read retval=%d\n", nread);
     if (nread < 0) {
         err = socket_errno();
         if (err == EAGAIN) {
@@ -372,6 +451,7 @@ disconnect:
 }
 
 static void hio_handle_events(hio_t* io) {
+    printf("hio_handle_events ----- \n");
     if ((io->events & HV_READ) && (io->revents & HV_READ)) {
         if (io->accept) {
             nio_accept(io);
@@ -410,12 +490,29 @@ int hio_accept(hio_t* io) {
 }
 
 int hio_connect(hio_t* io) {
-    int ret = connect(io->fd, io->peeraddr, SOCKADDR_LEN(io->peeraddr));
+    int ret = 0;
+#ifdef WITH_ZTS
+    if (io->io_type & HIO_TYPE_ZTS) {
+        puts("\tconnect HIO_TYPE_ZTS");
+        char ip4[INET_ADDRSTRLEN];
+        struct sockaddr_in* sa = (struct sockaddr_in*)io->peeraddr;
+        inet_ntop(AF_INET, &(sa->sin_addr), ip4, INET_ADDRSTRLEN);
+        printf("\t\tThe IPv4 address is: %s:%i\n", ip4, sa->sin_port);
+        // ret = zts_connect(io->fd, ip4, 3003, 0);
+        ret = zts_bsd_connect(io->fd, (struct zts_sockaddr*)io->peeraddr,
+            // sizeof(struct zts_sockaddr_storage)
+            (zts_socklen_t)SOCKADDR_LEN(io->peeraddr)
+        );
+        printf("\tzts_bsd_connect\t=> %i , zts_errno=%i, blocking=%i \n",ret,zts_errno,zts_get_blocking(io->fd));
+    } else
+#endif
+    ret = connect(io->fd, io->peeraddr, SOCKADDR_LEN(io->peeraddr));
 #ifdef OS_WIN
     if (ret < 0 && socket_errno() != WSAEWOULDBLOCK) {
 #else
     if (ret < 0 && socket_errno() != EINPROGRESS) {
 #endif
+        puts("!!!!connect err");
         perror("connect");
         hio_close(io);
         return ret;
@@ -562,6 +659,11 @@ int hio_close (hio_t* io) {
         io->ssl_ctx = NULL;
     }
     if (io->io_type & HIO_TYPE_SOCKET) {
+#ifdef WITH_ZTS
+        if (io->io_type & HIO_TYPE_ZTS) {
+            zts_bsd_close(io->fd);
+        } else
+#endif
         closesocket(io->fd);
     }
     return 0;

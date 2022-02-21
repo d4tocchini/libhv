@@ -222,6 +222,7 @@ error:
 }
 
 static int sockaddr_connect(sockaddr_u* peeraddr, int nonblock) {
+    printf("sockaddr_connect\n");
     // socket -> nonblocking -> connect
     int connfd = socket(peeraddr->sa.sa_family, SOCK_STREAM, 0);
     if (connfd < 0) {

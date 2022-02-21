@@ -152,3 +152,10 @@ make clean && make
 ./configure --with-mqtt
 make clean && make
 ```
+
+### compile WITH_ZTS
+Enable ZeroTier Sockets with [libzt](https://github.com/zerotier/libzt)
+```
+./configure --with-zts
+make clean && make
+```

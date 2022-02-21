@@ -49,23 +49,24 @@ endif
 
 default: all
 all: libhv examples
-examples: hmain_test htimer_test hloop_test \
-	nc nmap tinyhttpd tinyproxyd httpd curl wget wrk consul \
-	tcp_echo_server \
-	tcp_chat_server \
-	tcp_proxy_server \
-	udp_echo_server \
-	udp_proxy_server \
-	socks5_proxy_server \
-	multi-acceptor-processes \
-	multi-acceptor-threads \
-	one-acceptor-multi-workers \
-	http_server_test http_client_test \
-	websocket_server_test \
-	websocket_client_test \
-	mqtt_sub \
-	mqtt_pub \
-	jsonrpc \
+examples: tcp_proxy_server
+# examples: hmain_test htimer_test hloop_test \
+# 	nc nmap tinyhttpd tinyproxyd httpd curl wget wrk consul \
+# 	tcp_echo_server \
+# 	tcp_chat_server \
+# 	tcp_proxy_server \
+# 	udp_echo_server \
+# 	udp_proxy_server \
+# 	socks5_proxy_server \
+# 	multi-acceptor-processes \
+# 	multi-acceptor-threads \
+# 	one-acceptor-multi-workers \
+# 	http_server_test http_client_test \
+# 	websocket_server_test \
+# 	websocket_client_test \
+# 	mqtt_sub \
+# 	mqtt_pub \
+# 	jsonrpc \
 
 clean:
 	$(MAKEF) clean SRCDIRS="$(ALL_SRCDIRS)"

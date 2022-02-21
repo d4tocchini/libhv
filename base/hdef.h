@@ -254,7 +254,8 @@ ASCII:
 #define container_of(ptr, type, member) \
 ((type*)((char*)(ptr) - offsetof(type, member)))
 #endif
-
+#define PRINT_DEBUG
+#define PRINT_ERROR
 #ifdef PRINT_DEBUG
 #define printd(...) printf(__VA_ARGS__)
 #else

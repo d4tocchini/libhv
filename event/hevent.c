@@ -5,6 +5,10 @@
 
 #include "unpack.h"
 
+#ifdef WITH_ZTS
+#include "ZeroTierSockets.h"
+#endif
+
 uint64_t hloop_next_event_id() {
     static hatomic_t s_id = HATOMIC_VAR_INIT(0);
     return ++s_id;
@@ -16,6 +20,7 @@ uint32_t hio_next_id() {
 }
 
 static void fill_io_type(hio_t* io) {
+    printd("fill_io_type: io->io_type ZTS?:%i :%i\n",io->io_type & HIO_TYPE_ZTS,io->io_type);
     int type = 0;
     socklen_t optlen = sizeof(int);
     int ret = getsockopt(io->fd, SOL_SOCKET, SO_TYPE, (char*)&type, &optlen);
@@ -42,28 +47,58 @@ static void fill_io_type(hio_t* io) {
 }
 
 static void hio_socket_init(hio_t* io) {
-    if ((io->io_type & HIO_TYPE_SOCK_DGRAM) || (io->io_type & HIO_TYPE_SOCK_RAW)) {
-        // NOTE: sendto multiple peeraddr cannot use io->write_queue
-        blocking(io->fd);
-    } else {
-        nonblocking(io->fd);
+    printd("hio_socket_init\n");
+// #ifdef WITH_ZTS
+    if (io->io_type & HIO_TYPE_ZTS) {
+        printd("ZTS hio_socket_init\n");
+        if ((io->io_type & HIO_TYPE_SOCK_DGRAM) || (io->io_type & HIO_TYPE_SOCK_RAW)) {
+            // NOTE: sendto multiple peeraddr cannot use io->write_queue
+            zts_set_blocking(io->fd, 1);
+        } else {
+            zts_set_blocking(io->fd, 0);
+        }
+        // fill io->localaddr io->peeraddr
+        if (io->localaddr == NULL) {
+            HV_ALLOC(io->localaddr, sizeof(struct zts_sockaddr_storage));
+        }
+        if (io->peeraddr == NULL) {
+            HV_ALLOC(io->peeraddr, sizeof(struct zts_sockaddr_storage));
+        }
+        socklen_t addrlen = sizeof(struct zts_sockaddr_storage);
+        int ret = zts_bsd_getsockname(io->fd, io->localaddr, &addrlen);
+        printd("ZTS getsockname fd=%d ret=%d errno=%d\n", io->fd, ret, socket_errno());
+        // NOTE: udp peeraddr set by recvfrom/sendto
+        if (io->io_type & HIO_TYPE_SOCK_STREAM) {
+            addrlen = sizeof(struct zts_sockaddr_storage);
+            ret = zts_bsd_getpeername(io->fd, io->peeraddr, &addrlen);
+            printd("ZTS getpeername fd=%d ret=%d errno=%d\n", io->fd, ret, socket_errno());
+        }
     }
-    // fill io->localaddr io->peeraddr
-    if (io->localaddr == NULL) {
-        HV_ALLOC(io->localaddr, sizeof(sockaddr_u));
+    else {
+        if ((io->io_type & HIO_TYPE_SOCK_DGRAM) || (io->io_type & HIO_TYPE_SOCK_RAW)) {
+            // NOTE: sendto multiple peeraddr cannot use io->write_queue
+            blocking(io->fd);
+        } else {
+            nonblocking(io->fd);
+        }
+        // fill io->localaddr io->peeraddr
+        if (io->localaddr == NULL) {
+            HV_ALLOC(io->localaddr, sizeof(sockaddr_u));
+        }
+        if (io->peeraddr == NULL) {
+            HV_ALLOC(io->peeraddr, sizeof(sockaddr_u));
+        }
+        socklen_t addrlen = sizeof(sockaddr_u);
+        int ret = getsockname(io->fd, io->localaddr, &addrlen);
+        printd("getsockname fd=%d ret=%d errno=%d\n", io->fd, ret, socket_errno());
+        // NOTE: udp peeraddr set by recvfrom/sendto
+        if (io->io_type & HIO_TYPE_SOCK_STREAM) {
+            addrlen = sizeof(sockaddr_u);
+            ret = getpeername(io->fd, io->peeraddr, &addrlen);
+            printd("getpeername fd=%d ret=%d errno=%d\n", io->fd, ret, socket_errno());
+        }
     }
-    if (io->peeraddr == NULL) {
-        HV_ALLOC(io->peeraddr, sizeof(sockaddr_u));
-    }
-    socklen_t addrlen = sizeof(sockaddr_u);
-    int ret = getsockname(io->fd, io->localaddr, &addrlen);
-    printd("getsockname fd=%d ret=%d errno=%d\n", io->fd, ret, socket_errno());
-    // NOTE: udp peeraddr set by recvfrom/sendto
-    if (io->io_type & HIO_TYPE_SOCK_STREAM) {
-        addrlen = sizeof(sockaddr_u);
-        ret = getpeername(io->fd, io->peeraddr, &addrlen);
-        printd("getpeername fd=%d ret=%d errno=%d\n", io->fd, ret, socket_errno());
-    }
+
 }
 
 void hio_init(hio_t* io) {
@@ -85,6 +120,7 @@ void hio_init(hio_t* io) {
 
 void hio_ready(hio_t* io) {
     if (io->ready) return;
+    printd("hio_ready\n");
     // flags
     io->ready = 1;
     io->closed = 0;
@@ -398,7 +434,7 @@ void hio_read_cb(hio_t* io, void* buf, int len) {
     }
 
     if (io->read_cb) {
-        // printd("read_cb------\n");
+        printd("read_cb------\n");
         io->read_cb(io, buf, len);
         // printd("read_cb======\n");
     }
@@ -819,6 +855,7 @@ void hio_unset_unpack(hio_t* io) {
 
 //-----------------upstream---------------------------------------------
 void hio_read_upstream(hio_t* io) {
+    puts("hio_read_upstream");
     hio_t* upstream_io = io->upstream_io;
     if (upstream_io) {
         hio_read(io);
@@ -827,6 +864,7 @@ void hio_read_upstream(hio_t* io) {
 }
 
 void hio_write_upstream(hio_t* io, void* buf, int bytes) {
+    puts("hio_write_upstream");
     hio_t* upstream_io = io->upstream_io;
     if (upstream_io) {
         hio_write(upstream_io, buf, bytes);
@@ -834,6 +872,7 @@ void hio_write_upstream(hio_t* io, void* buf, int bytes) {
 }
 
 void hio_close_upstream(hio_t* io) {
+    puts("hio_close_upstream");
     hio_t* upstream_io = io->upstream_io;
     if (upstream_io) {
         hio_close(upstream_io);
@@ -872,3 +911,17 @@ hio_t* hio_setup_udp_upstream(hio_t* io, const char* host, int port) {
     hio_read_upstream(io);
     return upstream_io;
 }
+
+// hio_t* hio_setup_zts_upstream(hio_t* io, const char* host, int port, int ssl) {
+//     hio_t* upstream_io = hio_create_socket(io->loop, host, port, HIO_TYPE_TCP, HIO_CLIENT_SIDE);
+//     if (upstream_io == NULL) return NULL;
+//     if (ssl) hio_enable_ssl(upstream_io);
+//     hio_setup_upstream(io, upstream_io);
+//     hio_setcb_read(io, hio_write_upstream);
+//     hio_setcb_read(upstream_io, hio_write_upstream);
+//     hio_setcb_close(io, hio_close_upstream);
+//     hio_setcb_close(upstream_io, hio_close_upstream);
+//     hio_setcb_connect(upstream_io, hio_read_upstream);
+//     hio_connect(upstream_io);
+//     return upstream_io;
+// }

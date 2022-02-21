@@ -108,6 +108,8 @@ typedef enum {
     HIO_TYPE_SOCK_STREAM= 0x0FF00000,
 
     HIO_TYPE_SOCKET     = 0x0FFFFF00,
+
+    HIO_TYPE_ZTS        = 0x10000000,
 } hio_type_e;
 
 typedef enum {

@@ -135,7 +135,7 @@ static bool parse_http_request_line(http_conn_t* conn, char* buf, int len) {
     sscanf(buf, "%s %s HTTP/%d.%d", req->method, req->path, &req->major_version, &req->minor_version);
     if (req->major_version != 1) return false;
     if (req->minor_version == 1) req->keepalive = 1;
-    // printf("%s %s HTTP/%d.%d\r\n", req->method, req->path, req->major_version, req->minor_version);
+    printf("%s %s HTTP/%d.%d\r\n", req->method, req->path, req->major_version, req->minor_version);
     return true;
 }
 
@@ -150,7 +150,7 @@ static bool parse_http_head(http_conn_t* conn, char* buf, int len) {
     val = delim + 1;
     // trim space
     while (*val == ' ') ++val;
-    // printf("%s: %s\r\n", key, val);
+    printf("%s: %s\r\n", key, val);
     if (stricmp(key, "Host") == 0) {
         strncpy(req->host, val, sizeof(req->host) - 1);
     } else if (stricmp(key, "Content-Length") == 0) {
@@ -166,7 +166,7 @@ static bool parse_http_head(http_conn_t* conn, char* buf, int len) {
 }
 
 static void on_upstream_connect(hio_t* upstream_io) {
-    // printf("on_upstream_connect\n");
+    printf("on_upstream_connect\n");
     http_conn_t* conn = (http_conn_t*)hevent_userdata(upstream_io);
     http_msg_t* req = &conn->request;
     // send head
@@ -177,6 +177,7 @@ static void on_upstream_connect(hio_t* upstream_io) {
     hio_write(upstream_io, buf, msglen);
     if (conn->state != s_end) {
         // start recv body then upstream
+        puts("start recv body then upstream");
         hio_read_start(conn->io);
     } else {
         if (req->keepalive) {
@@ -189,18 +190,20 @@ static void on_upstream_connect(hio_t* upstream_io) {
         }
     }
     // start recv response
+    puts("start recv response");
     hio_read_start(upstream_io);
 }
 
 static int on_head_end(http_conn_t* conn) {
     http_msg_t* req = &conn->request;
+    char backend_host[64] = {0};
+    int backend_port = 80;
+    int backend_ssl = 0;
     if (req->host[0] == '\0') {
         fprintf(stderr, "No Host header!\n");
         return -1;
     }
-    char backend_host[64] = {0};
     strcpy(backend_host, req->host);
-    int backend_port = 80;
     char* pos = strchr(backend_host, ':');
     if (pos) {
         *pos = '\0';
@@ -215,11 +218,13 @@ static int on_head_end(http_conn_t* conn) {
     }
     // NOTE: blew for proxy
     req->proxy = 1;
-    int backend_ssl = strncmp(req->path, "https", 5) == 0 ? 1 : 0;
-    // printf("upstream %s:%d\n", backend_host, backend_port);
+    if ((backend_port % 1000) == 443 || strncmp(req->path, "https", 5) == 0)
+        backend_ssl = 1;
+    printf("upstream %s:%d  %i %s\n", backend_host, backend_port, backend_ssl, req->path);
     hloop_t* loop = hevent_loop(conn->io);
     // hio_t* upstream_io = hio_setup_tcp_upstream(conn->io, backend_host, backend_port, backend_ssl);
-    hio_t* upstream_io = hio_create_socket(loop, backend_host, backend_port, HIO_TYPE_TCP, HIO_CLIENT_SIDE);
+    hio_type_e upstream_type = HIO_TYPE_TCP; // backend_ssl?HIO_TYPE_SSL:HIO_TYPE_TCP;
+    hio_t* upstream_io = hio_create_socket(loop, backend_host, backend_port, upstream_type, HIO_CLIENT_SIDE);
     if (upstream_io == NULL) {
         fprintf(stderr, "Failed to upstream %s:%d!\n", backend_host, backend_port);
         return -3;
@@ -237,10 +242,14 @@ static int on_head_end(http_conn_t* conn) {
 }
 
 static int on_body(http_conn_t* conn, void* buf, int readbytes) {
+    puts("on_body");
     http_msg_t* req = &conn->request;
+    puts("on_body .");
     if (req->proxy) {
+        puts("on_body ..");
         hio_write_upstream(conn->io, buf, readbytes);
     }
+    puts("on_body ...");
     return 0;
 }
 
@@ -255,7 +264,7 @@ static int on_request(http_conn_t* conn) {
 }
 
 static void on_close(hio_t* io) {
-    // printf("on_close fd=%d error=%d\n", hio_fd(io), hio_error(io));
+    printf("on_close fd=%d error=%d\n", hio_fd(io), hio_error(io));
     http_conn_t* conn = (http_conn_t*)hevent_userdata(io);
     if (conn) {
         HV_FREE(conn);
@@ -266,16 +275,16 @@ static void on_close(hio_t* io) {
 
 static void on_recv(hio_t* io, void* buf, int readbytes) {
     char* str = (char*)buf;
-    // printf("on_recv fd=%d readbytes=%d\n", hio_fd(io), readbytes);
-    // printf("%.*s", readbytes, str);
+    printf("on_recv fd=%d readbytes=%d\n", hio_fd(io), readbytes);
+    printf("%.*s\n", readbytes, str);
     http_conn_t* conn = (http_conn_t*)hevent_userdata(io);
     http_msg_t* req = &conn->request;
     switch (conn->state) {
     case s_begin:
-        // printf("s_begin");
+        printf("s_begin");
         conn->state = s_first_line;
     case s_first_line:
-        // printf("s_first_line\n");
+        printf("s_first_line\n");
         if (readbytes < 2) {
             fprintf(stderr, "Not match \r\n!");
             hio_close(io);
@@ -292,7 +301,7 @@ static void on_recv(hio_t* io, void* buf, int readbytes) {
         hio_readline(io);
         break;
     case s_head:
-        // printf("s_head\n");
+        printf("s_head\n");
         if (readbytes < 2) {
             fprintf(stderr, "Not match \r\n!");
             hio_close(io);
@@ -318,7 +327,7 @@ static void on_recv(hio_t* io, void* buf, int readbytes) {
             break;
         }
     case s_head_end:
-        // printf("s_head_end\n");
+        printf("s_head_end\n");
         if (on_head_end(conn) < 0) {
             hio_close(io);
             return;
@@ -327,6 +336,7 @@ static void on_recv(hio_t* io, void* buf, int readbytes) {
             conn->state = s_end;
             if (req->proxy) {
                 // NOTE: wait upstream connect!
+                break;
             } else {
                 goto s_end;
             }
@@ -342,22 +352,28 @@ static void on_recv(hio_t* io, void* buf, int readbytes) {
             break;
         }
     case s_body:
-        // printf("s_body\n");
+        printf("s_body req->content_length=%i\n",req->content_length);
+        puts("000");
         if (on_body(conn, buf, readbytes) < 0) {
+            puts("001");
             hio_close(io);
             return;
         }
+        puts("002");
         req->body = str;
         req->body_len += readbytes;
         if (readbytes == req->content_length) {
             conn->state = s_end;
+            puts("003");
         } else {
+            puts("004");
             // Not end
             break;
         }
+        puts("005");
     case s_end:
 s_end:
-        // printf("s_end\n");
+        printf("s_end\n");
         // received complete request
         if (req->proxy) {
             // NOTE: reply by upstream
@@ -466,6 +482,17 @@ int main(int argc, char** argv) {
         thread_num = get_ncpu();
     }
     if (thread_num == 0) thread_num = 1;
+
+    puts("ssl");
+    hssl_ctx_init_param_t ssl_param;
+    memset(&ssl_param, 0, sizeof(ssl_param));
+    ssl_param.crt_file = "cert/server.crt";
+    ssl_param.key_file = "cert/server.key";
+    ssl_param.endpoint = HSSL_SERVER;
+    if (hssl_ctx_init(&ssl_param) == NULL) {
+        fprintf(stderr, "hssl_ctx_init failed!\n");
+        return -30;
+    }
 
     worker_loops = (hloop_t**)malloc(sizeof(hloop_t*) * thread_num);
     for (int i = 0; i < thread_num; ++i) {

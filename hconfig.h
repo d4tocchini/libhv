@@ -10,7 +10,7 @@
 #endif
 
 #ifndef HAVE_STDATOMIC_H
-#define HAVE_STDATOMIC_H 0
+#define HAVE_STDATOMIC_H 1
 #endif
 
 #ifndef HAVE_SYS_TYPES_H
@@ -74,13 +74,13 @@
 #endif
 
 #ifndef HAVE_EVENTFD
-#define HAVE_EVENTFD 1
+#define HAVE_EVENTFD 0
 #endif
 
-/* #undef WITH_OPENSSL */
+#define WITH_OPENSSL 1
 /* #undef WITH_GNUTLS */
 /* #undef WITH_MBEDTLS */
-/* #undef ENABLE_UDS */
+#define ENABLE_UDS 1
 /* #undef USE_MULTIMAP */
 /* #undef WITH_KCP */
 
